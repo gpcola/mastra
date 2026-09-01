@@ -37,6 +37,7 @@ import { parseAuthorizedBotsEnv } from '@mastra/factory/integrations/github/webh
 import { LinearIntegration } from '@mastra/factory/integrations/linear/integration';
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
+import { createModelSpendCriticalSafetyScorer, createModelSpendPolicyScorer } from './modelspend-scorers.js';
 
 /**
  * Parse a positive-integer env knob; anything else means "use the default".
@@ -367,6 +368,8 @@ export const factory = new MastraFactory({
 });
 
 const preparedArgs = await factory.prepare();
+const modelspendPolicyScorer = createModelSpendPolicyScorer();
+const modelspendCriticalSafetyScorer = createModelSpendCriticalSafetyScorer();
 
 // Construct the server-owned Mastra HERE so the `new Mastra(...)` literal lives
 // in the entry file (see module docs). `prepare()` returns the constructor args
@@ -374,6 +377,11 @@ const preparedArgs = await factory.prepare();
 // `server` config (middleware + apiRoutes + cors).
 export const mastra = new Mastra({
   ...preparedArgs,
+  scorers: {
+    ...(preparedArgs.scorers ?? {}),
+    modelspendPolicy: modelspendPolicyScorer,
+    modelspendCriticalSafety: modelspendCriticalSafetyScorer,
+  },
 });
 
 // Post-construct boot: initialize the controller (which now inherits this
