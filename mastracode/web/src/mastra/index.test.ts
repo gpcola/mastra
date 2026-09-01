@@ -81,6 +81,12 @@ describe('platform entry (src/mastra/index.ts)', () => {
     const server = mod.mastra.getServer();
     expect(server).toBeDefined();
 
+    const scorers = mod.mastra.listScorers();
+    expect(Object.keys(scorers)).toContain('modelspendPolicy');
+    expect(Object.keys(scorers)).toContain('modelspendCriticalSafety');
+    expect(mod.mastra.getScorer('modelspendPolicy').id).toBe('modelspend-factory-policy');
+    expect(mod.mastra.getScorer('modelspendCriticalSafety').id).toBe('modelspend-critical-safety');
+
     // The custom web surface must ride along on `server.apiRoutes` so the
     // deployer-generated server exposes it. At minimum the fs `/web/*` routes
     // are always assembled (github is fail-soft, auth routes are gated).
