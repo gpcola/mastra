@@ -16,7 +16,7 @@ const AuthGuard = () => {
   if (isError) return <AuthPendingSkeleton label="Unable to reach MastraCode server" />;
 
   const state = data;
-  if (!state?.authEnabled) return <AuthNotConfiguredScreen />;
+  if (!state?.authEnabled) return <OnboardingGuard />;
 
   if (!state.authenticated) {
     // Router location (not window.location) so memory routers and in-app
