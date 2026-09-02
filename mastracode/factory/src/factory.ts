@@ -878,7 +878,7 @@ export class MastraFactory {
           // serve it at `/` from this server. Mounted last so the auth gate (when
           // enabled) covers it; it always passes `/api`, `/web`, `/auth` through.
           const uiDist = resolveUiDistDir();
-          const spa = uiDist ? [createSpaStaticMiddleware(uiDist)] : [];
+          const spa = uiDist ? [createSpaStaticMiddleware(uiDist, { authEnabled: Boolean(auth) })] : [];
           if (!auth) {
             // Auth disabled: no gate. Still prime the sentinel-local custom
             // provider snapshot so model calls see DB rows, then SPA + CORS.
