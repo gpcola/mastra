@@ -678,6 +678,7 @@ describe('GitHub session workspace preparation', () => {
   async function createLocalFactory(
     rootPrefix = 'mastracode-web-local-sessions-',
     workspaceRegistry?: FactoryWorkspaceRegistry,
+    authDisabled = false,
   ) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), rootPrefix));
     tempDirs.push(root);
@@ -689,6 +690,7 @@ describe('GitHub session workspace preparation', () => {
       github: fakeGithubIntegration() as any,
       fleet,
       workItems: { findRunBindingBySession: mocks.findRunBindingBySession } as any,
+      authDisabled,
       ...(workspaceRegistry ? { workspaceRegistry } : {}),
     });
     return {
@@ -826,6 +828,31 @@ describe('GitHub session workspace preparation', () => {
 
     await expect(workspace({ requestContext })).rejects.toThrow(
       'Factory session session-a is not available to the current user',
+    );
+  });
+
+  it('opens a local/local Factory session without a caller identity when auth is explicitly disabled', async () => {
+    const { workspace } = await createLocalFactory('mastracode-web-local-no-auth-', undefined, true);
+    addProject({ orgId: 'local' });
+    addSession({ id: 'session-a', orgId: 'local', userId: 'local' });
+    const requestContext = createGithubRequestContext('project-1', 'session-a', {});
+
+    const opened = await workspace({ requestContext });
+
+    expect(opened.id).toContain('project-1-session-a');
+    const sandboxFactory = (mocks as any).createSandbox ?? (mocks as any).ensureSandbox;
+    expect(sandboxFactory).toBeTypeOf('function');
+    expect(sandboxFactory).toHaveBeenCalled();
+  });
+
+  it('still refuses a non-local session without caller identity when auth is explicitly disabled', async () => {
+    const { workspace } = await createLocalFactory('mastracode-web-local-no-auth-nonlocal-', undefined, true);
+    addProject();
+    addSession({ id: 'session-a' });
+    const requestContext = createGithubRequestContext('project-1', 'session-a', {});
+
+    await expect(workspace({ requestContext })).rejects.toThrow(
+      'Factory session session-a was resolved without a caller identity',
     );
   });
 

@@ -150,6 +150,19 @@ describe('createSpaStaticMiddleware – path traversal', () => {
     expect(c._resHeaders['Cache-Control']).toBe('no-cache');
   });
 
+  it('injects auth-disabled runtime config into index.html', async () => {
+    vi.mocked(readFile).mockResolvedValue(Buffer.from('<html><head></head><body></body></html>'));
+    vi.mocked(stat).mockResolvedValue({ isFile: () => false } as any);
+
+    const middleware = createSpaStaticMiddleware('/app/ui', { authEnabled: false });
+    const c = mockContext('GET', '/', 'text/html');
+    await middleware(c, async () => {});
+
+    const body = new TextDecoder().decode(c._body()!);
+    expect(body).toContain('window.__MASTRACODE_CONFIG__={"authEnabled":false}');
+    expect(c._resHeaders['Cache-Control']).toBe('no-cache');
+  });
+
   it('passes through server-owned prefixes', async () => {
     const middleware = createSpaStaticMiddleware('/app/ui');
     for (const prefix of ['/api/foo', '/web/bar', '/auth/callback', '/connect/slack']) {

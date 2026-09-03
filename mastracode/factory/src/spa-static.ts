@@ -85,6 +85,18 @@ async function serveFile(c: Context, filePath: string, immutable: boolean): Prom
   return c.body(new Uint8Array(data));
 }
 
+async function serveIndex(c: Context, filePath: string, authEnabled: boolean): Promise<Response> {
+  const html = (await readFile(filePath)).toString('utf8');
+  const runtimeConfig = `<script>window.__MASTRACODE_CONFIG__=${JSON.stringify({ authEnabled })};</script>`;
+  const injected = html.includes('<head>')
+    ? html.replace('<head>', `<head>${runtimeConfig}`)
+    : `${runtimeConfig}${html}`;
+
+  c.header('Content-Type', 'text/html; charset=utf-8');
+  c.header('Cache-Control', 'no-cache');
+  return c.body(new TextEncoder().encode(injected));
+}
+
 /**
  * Hono middleware serving the built SPA from `uiDist`:
  *   - exact file hits (js/css/assets) are served directly,
@@ -92,7 +104,7 @@ async function serveFile(c: Context, filePath: string, immutable: boolean): Prom
  *     client-side routing),
  *   - `/api`, `/web`, `/auth` and non-GET requests always pass through.
  */
-export function createSpaStaticMiddleware(uiDist: string) {
+export function createSpaStaticMiddleware(uiDist: string, options: { authEnabled: boolean } = { authEnabled: true }) {
   return async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') return next();
     const path = c.req.path;
@@ -105,13 +117,14 @@ export function createSpaStaticMiddleware(uiDist: string) {
     // prefix check (same pattern as fs-routes.ts isWithinRoot).
     const uiDistPrefix = uiDist.endsWith(sep) ? uiDist : uiDist + sep;
     if (filePath.startsWith(uiDistPrefix) && relative !== '' && (await isFile(filePath))) {
+      if (relative === 'index.html') return serveIndex(c, filePath, options.authEnabled);
       return serveFile(c, filePath, relative.startsWith('assets/'));
     }
 
     // SPA fallback: serve index.html for root and html navigations.
     const accept = c.req.header('Accept') ?? '';
     if (path === '/' || accept.includes('text/html')) {
-      return serveFile(c, join(uiDist, 'index.html'), false);
+      return serveIndex(c, join(uiDist, 'index.html'), options.authEnabled);
     }
 
     return next();

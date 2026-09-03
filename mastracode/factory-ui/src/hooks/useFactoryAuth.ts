@@ -18,10 +18,13 @@ const AUTH_DISABLED_STATE: FactoryAuthState = { authEnabled: false, authenticate
  */
 export function useFactoryAuth() {
   const { baseUrl } = useApiConfig();
+  const authDisabled = getRuntimeConfig().authEnabled === false;
 
   return useQuery({
     queryKey: queryKeys.factoryAuth(),
     queryFn: () => fetchAuthState(baseUrl),
-    refetchInterval: query => (query.state.status === 'error' ? 2_000 : false),
+    enabled: !authDisabled,
+    initialData: authDisabled ? AUTH_DISABLED_STATE : undefined,
+    refetchInterval: query => (!authDisabled && query.state.status === 'error' ? 2_000 : false),
   });
 }

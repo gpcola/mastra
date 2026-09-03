@@ -51,6 +51,7 @@ function buildApp(
   startCoordinator?: { prepare: (input: any) => Promise<any> },
   requestContext?: RequestContext,
   running: ReadonlySet<string> = new Set(),
+  auth = fakeRouteAuth(),
 ) {
   const app = new Hono();
   app.use('*', async (c, next) => {
@@ -61,7 +62,7 @@ function buildApp(
   mountApiRoutes(
     app as any,
     new WorkItemRoutes({
-      auth: fakeRouteAuth(),
+      auth,
       audit,
       projects: seed.projects,
       workItems: seed.workItems,
@@ -128,6 +129,24 @@ afterEach(() => {
 
 // ── Auth / scoping ───────────────────────────────────────────────────────
 describe('auth and scoping', () => {
+  it('uses the sentinel local tenant when auth is explicitly disabled', async () => {
+    const localProject = await seed.projects.create({
+      orgId: 'local',
+      userId: 'local',
+      input: { name: 'local project' },
+    });
+    const res = await buildApp(
+      null,
+      undefined,
+      undefined,
+      new Set(),
+      fakeRouteAuth({ enabled: false }),
+    ).request(`/web/factory/projects/${localProject.id}/work-items`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ workItems: [], runningSessionIds: [] });
+  });
+
   it('401s without a user', async () => {
     const res = await json('GET', `/web/factory/projects/${PROJECT_ID}/work-items`, undefined, null);
     expect(res.status).toBe(401);

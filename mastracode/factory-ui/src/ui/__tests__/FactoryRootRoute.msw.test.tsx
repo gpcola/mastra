@@ -47,6 +47,33 @@ describe('Factory root route', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/factories/fp-1/work'));
   });
 
+  it('does not probe /auth/me when runtime config says auth is disabled', async () => {
+    window.__MASTRACODE_CONFIG__ = { authEnabled: false };
+    let authRequests = 0;
+
+    server.use(
+      http.get(`${TEST_BASE_URL}/auth/me`, () => {
+        authRequests += 1;
+        return HttpResponse.html('<title>Mastra Server</title>');
+      }),
+      http.get(`${TEST_BASE_URL}/web/factory/projects`, () =>
+        HttpResponse.json({ projects: [{ id: 'fp-1', name: 'Authless Factory' }] }),
+      ),
+      http.get(`${TEST_BASE_URL}/web/factory/projects/fp-1/source-control-connections`, () =>
+        HttpResponse.json({ connections: [] }),
+      ),
+      http.get(`${TEST_BASE_URL}/web/factory/projects/fp-1/work-items`, () => HttpResponse.json({ workItems: [] })),
+    );
+
+    try {
+      const router = renderFactoryRoute('/');
+      await waitFor(() => expect(router.state.location.pathname).toBe('/factories/fp-1/work'));
+      expect(authRequests).toBe(0);
+    } finally {
+      delete window.__MASTRACODE_CONFIG__;
+    }
+  });
+
   it('redirects the root route to onboarding when no factories exist', async () => {
     server.use(
       http.get(`${TEST_BASE_URL}/auth/me`, () =>
