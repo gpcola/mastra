@@ -709,6 +709,7 @@ export class MastraFactory {
           ...(this.#config.sandbox ? { sandbox: this.#config.sandbox } : {}),
           ...(githubIntegration ? { github: githubIntegration } : {}),
           ...(workItemsStorage ? { workItems: workItemsStorage } : {}),
+          authDisabled: auth === undefined,
           fleet,
           workspaceRegistry,
         }),
