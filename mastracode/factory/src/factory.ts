@@ -773,6 +773,7 @@ export class MastraFactory {
           ...(githubIntegration ? { github: githubIntegration } : {}),
           ...(factoryProjectsStorage ? { projects: factoryProjectsStorage } : {}),
           ...(workItemsStorage ? { workItems: workItemsStorage } : {}),
+          authDisabled: auth === undefined,
           workspaceRegistry,
         }),
         disableGithubSignals: true,
