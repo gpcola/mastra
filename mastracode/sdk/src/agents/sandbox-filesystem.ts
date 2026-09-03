@@ -62,6 +62,13 @@ export interface SandboxFilesystemOptions {
 /** Default per-command deadline so a hung sandbox can't block file tools forever. */
 const COMMAND_TIMEOUT_MS = 30_000;
 
+/**
+ * Keep content-bearing shell arguments comfortably below Linux's per-argv
+ * MAX_ARG_STRLEN (~128 KiB). Base64 chunks stay 4-character aligned so each
+ * chunk can be decoded independently.
+ */
+const BASE64_ARG_CHUNK_CHARS = 24 * 1024;
+
 /** Single-quote a string for safe POSIX shell interpolation. */
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -195,6 +202,42 @@ export class SandboxFilesystem implements WorkspaceFilesystem {
     return result;
   }
 
+  /**
+   * Materialize large content into a temporary file without ever placing the
+   * complete payload in one argv entry. Large string_replace_lsp edits used
+   * to fail with E2BIG because the whole base64-encoded file lived in the
+   * single sh -c argument passed to execve().
+   */
+  private async stageLargeContent(abs: string, b64: string, createParent: boolean): Promise<string> {
+    const dir = posixPath.dirname(abs);
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const stage = `${abs}.__mastra_write_${suffix}`;
+    const mkdir = createParent ? `mkdir -p ${shellQuote(dir)} && ` : '';
+
+    await this.execOk(
+      `${mkdir}umask 077; (set -C; : > ${shellQuote(stage)})`,
+      `stage write ${abs}`,
+    );
+
+    try {
+      for (let offset = 0; offset < b64.length; offset += BASE64_ARG_CHUNK_CHARS) {
+        const chunk = b64.slice(offset, offset + BASE64_ARG_CHUNK_CHARS);
+        await this.execOk(
+          `printf %s ${shellQuote(chunk)} | base64 -d >> ${shellQuote(stage)}`,
+          `stage write ${abs}`,
+        );
+      }
+      return stage;
+    } catch (error) {
+      await this.exec(`rm -f ${shellQuote(stage)}`).catch(() => {});
+      throw error;
+    }
+  }
+
+  private async removeStage(stage: string): Promise<void> {
+    await this.exec(`rm -f ${shellQuote(stage)}`).catch(() => {});
+  }
+
   // ── File operations ────────────────────────────────────────────────────
 
   async readFile(path: string, options?: ReadOptions): Promise<string | Buffer> {
@@ -222,30 +265,66 @@ export class SandboxFilesystem implements WorkspaceFilesystem {
     await this.assertContainedDest(abs, path);
     const b64 = toBuffer(content).toString('base64');
     const dir = posixPath.dirname(abs);
-    const mkdir = options?.recursive === false ? '' : `mkdir -p ${shellQuote(dir)} && `;
-    if (options?.overwrite === false) {
-      // `set -C` (noclobber) makes the redirect itself the exclusivity check —
-      // no exists() pre-check that could race with a concurrent writer.
-      const result = await this.exec(
-        `${mkdir}{ (set -C; printf %s ${shellQuote(b64)} | base64 -d > ${shellQuote(abs)}) 2>/dev/null || { [ -e ${shellQuote(abs)} ] && exit ${EXIT_EXISTS} || exit 1; }; }`,
-      );
-      if (result.exitCode === EXIT_EXISTS) throw new FileExistsError(path);
-      if (result.exitCode !== 0) {
-        throw new Error(`writeFile ${path} failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+    const createParent = options?.recursive !== false;
+    const mkdir = createParent ? `mkdir -p ${shellQuote(dir)} && ` : '';
+
+    // Small writes keep the one-command fast path. Large writes are staged in
+    // bounded chunks so no single sh -c argv entry can hit E2BIG.
+    if (b64.length <= BASE64_ARG_CHUNK_CHARS) {
+      if (options?.overwrite === false) {
+        const result = await this.exec(
+          `${mkdir}{ (set -C; printf %s ${shellQuote(b64)} | base64 -d > ${shellQuote(abs)}) 2>/dev/null || { [ -e ${shellQuote(abs)} ] && exit ${EXIT_EXISTS} || exit 1; }; }`,
+        );
+        if (result.exitCode === EXIT_EXISTS) throw new FileExistsError(path);
+        if (result.exitCode !== 0) {
+          throw new Error(`writeFile ${path} failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+        }
+        return;
       }
+      await this.execOk(
+        `${mkdir}printf %s ${shellQuote(b64)} | base64 -d > ${shellQuote(abs)}`,
+        `writeFile ${path}`,
+      );
       return;
     }
-    await this.execOk(`${mkdir}printf %s ${shellQuote(b64)} | base64 -d > ${shellQuote(abs)}`, `writeFile ${path}`);
+
+    const stage = await this.stageLargeContent(abs, b64, createParent);
+    try {
+      if (options?.overwrite === false) {
+        const result = await this.exec(
+          `{ (set -C; cat ${shellQuote(stage)} > ${shellQuote(abs)}) 2>/dev/null || { [ -e ${shellQuote(abs)} ] && exit ${EXIT_EXISTS} || exit 1; }; }`,
+        );
+        if (result.exitCode === EXIT_EXISTS) throw new FileExistsError(path);
+        if (result.exitCode !== 0) {
+          throw new Error(`writeFile ${path} failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+        }
+        return;
+      }
+      await this.execOk(`cat ${shellQuote(stage)} > ${shellQuote(abs)}`, `writeFile ${path}`);
+    } finally {
+      await this.removeStage(stage);
+    }
   }
 
   async appendFile(path: string, content: FileContent): Promise<void> {
     const abs = this.resolve(path);
     await this.assertContainedDest(abs, path);
     const b64 = toBuffer(content).toString('base64');
-    await this.execOk(
-      `mkdir -p ${shellQuote(posixPath.dirname(abs))} && printf %s ${shellQuote(b64)} | base64 -d >> ${shellQuote(abs)}`,
-      `appendFile ${path}`,
-    );
+
+    if (b64.length <= BASE64_ARG_CHUNK_CHARS) {
+      await this.execOk(
+        `mkdir -p ${shellQuote(posixPath.dirname(abs))} && printf %s ${shellQuote(b64)} | base64 -d >> ${shellQuote(abs)}`,
+        `appendFile ${path}`,
+      );
+      return;
+    }
+
+    const stage = await this.stageLargeContent(abs, b64, true);
+    try {
+      await this.execOk(`cat ${shellQuote(stage)} >> ${shellQuote(abs)}`, `appendFile ${path}`);
+    } finally {
+      await this.removeStage(stage);
+    }
   }
 
   async deleteFile(path: string, options?: RemoveOptions): Promise<void> {
