@@ -836,7 +836,6 @@ describe('GitHub session workspace preparation', () => {
     addProject({ orgId: 'local' });
     addSession({ id: 'session-a', orgId: 'local', userId: 'local' });
     const requestContext = createGithubRequestContext('project-1', 'session-a', {});
-    requestContext.delete('user');
 
     const opened = await workspace({ requestContext });
 
@@ -854,7 +853,6 @@ describe('GitHub session workspace preparation', () => {
     addProject();
     addSession({ id: 'session-a' });
     const requestContext = createGithubRequestContext('project-1', 'session-a', {});
-    requestContext.delete('user');
 
     await expect(workspace({ requestContext })).rejects.toThrow(
       'Factory session session-a was resolved without a caller identity',
