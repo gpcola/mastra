@@ -225,6 +225,15 @@ function watchRun(
         // account) fail terminally so retries stop hammering a run that can
         // never succeed until the configuration changes.
         if (omFailure) {
+          // OM's own failure event carries text rather than a typed Error. A
+          // distinct machine-readable quota code is sufficient; plain HTTP
+          // 429 remains transient and must not be treated as entitlement loss.
+          if (/\b(?:usage_limit_reached|insufficient_quota)\b/i.test(omFailure)) {
+            throw new FactoryDispatchError(
+              'provider_usage_limit',
+              `${label} stopped because the observational-memory provider's usage allowance is exhausted. Resume only when capacity is available or an approved provider is configured.`,
+            );
+          }
           if (isPermanentProviderRejection(omFailure)) {
             throw new FactoryDispatchError(
               'run_configuration_invalid',

@@ -1680,6 +1680,52 @@ describe('FactoryDecisionDispatcher', () => {
       expect(session.sendSignal).toHaveBeenCalledTimes(1);
     });
 
+    it('does not immediately retry an exhausted observational-memory model', async () => {
+      const storage = (await createFactoryStorageForTests()).workItems;
+      const { item, transitionService } = await queueDecision(storage, planSkill('plan-om-quota'));
+      const { controller, session } = createSession(undefined, {
+        agentEndReason: 'aborted',
+        emitAgentEndDuringSignal: true,
+        omObservationError: 'provider error: usage_limit_reached with account metadata not to persist',
+      });
+      await bindRole(storage, item.id, 'plan');
+      const dispatcher = new FactoryDecisionDispatcher({
+        controller: controller as never,
+        isAutoRunEnabled: async () => true,
+        transitionService, storage, ownerId: 'worker-1',
+      });
+      await dispatcher.runOnce(new Date('2030-01-01T00:00:00Z'));
+      const [record] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+      expect(record).toMatchObject({ status: 'failed', attempts: 1, failureCode: 'provider_usage_limit' });
+      expect(record?.lastError).not.toContain('account metadata');
+      await dispatcher.runOnce(new Date('2030-01-01T00:01:00Z'));
+      expect(session.sendSignal).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a transient HTTP 429 from the provider retryable', async () => {
+      const storage = (await createFactoryStorageForTests()).workItems;
+      const { item, transitionService } = await queueDecision(storage, planSkill('plan-rate-limit'));
+      const error = Object.assign(new Error('Rate limit exceeded'), {
+        statusCode: 429,
+        responseBody: JSON.stringify({ error: { type: 'rate_limit_exceeded' } }),
+      });
+      const { controller } = createSession(undefined, {
+        agentEndReason: 'error',
+        emitAgentEndDuringSignal: true,
+        runError: error,
+      });
+      await bindRole(storage, item.id, 'plan');
+      const dispatcher = new FactoryDecisionDispatcher({
+        controller: controller as never,
+        isAutoRunEnabled: async () => true,
+        transitionService, storage, ownerId: 'worker-1',
+      });
+      await dispatcher.runOnce(new Date('2030-01-01T00:00:00Z'));
+      expect((await storage.listDeferredDecisions('org-1', PROJECT_ID))[0]).toMatchObject({
+        status: 'retry', attempts: 1, failureCode: 'unknown',
+      });
+    });
+
     it('fails terminally when an abort follows a permanent OM provider rejection', async () => {
       const storage = (await createFactoryStorageForTests()).workItems;
       const { item, transitionService } = await queueDecision(storage, planSkill('plan-om-permanent'));
