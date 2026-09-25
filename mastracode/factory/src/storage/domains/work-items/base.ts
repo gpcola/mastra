@@ -169,6 +169,7 @@ const FACTORY_DISPATCH_FAILURE_CODES = [
   'repository_cli_missing',
   'repository_pr_failed',
   'run_configuration_invalid',
+  'provider_usage_limit',
   'unknown',
 ] as const;
 

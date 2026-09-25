@@ -7,6 +7,7 @@ import { FACTORY_OPEN_RUNS_SETTING, observeSessionRunEnd } from '../session/run-
 import { FactoryFeedReader } from '../storage/domains/comments/feed-context.js';
 import { FACTORY_RULE_MATERIALIZATION_KEY, type WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
+import { factoryDispatchFailureMetadata } from './dispatch-errors.js';
 import { FACTORY_DISPATCH_CONSTANTS, FactoryDecisionDispatcher } from './dispatcher.js';
 import { FactoryTransitionService } from './transition-service.js';
 import type { FactoryCommitDecision } from './types.js';
@@ -36,6 +37,7 @@ function createSession(
     signalAccepted?: Promise<{ accepted: true; action?: string }>;
     emitAgentEndDuringSignal?: boolean;
     agentEndReason?: 'complete' | 'aborted' | 'error' | 'suspended';
+    runError?: Error;
     /** Emitted on the run's event stream just before each `agent_end`, modelling an OM failure that aborted the run. */
     omObservationError?: string;
     /** Models a signal queued onto an in-flight run that ends before draining it. */
@@ -67,8 +69,11 @@ function createSession(
 ) {
   let threadId = 'thread-1';
   const settings: Record<string, unknown> = {};
-  const agentEndListeners = new Set<(event: { type: string; reason?: string; error?: string }) => void>();
+  const agentEndListeners = new Set<(event: { type: string; reason?: string; error?: string | Error }) => void>();
   const emitAgentEnd = (reason = options?.agentEndReason) => {
+    if (options?.runError) {
+      for (const listener of agentEndListeners) listener({ type: 'error', error: options.runError });
+    }
     if (options?.omObservationError) {
       for (const listener of agentEndListeners) {
         listener({ type: 'om_observation_failed', error: options.omObservationError });
@@ -1636,6 +1641,43 @@ describe('FactoryDecisionDispatcher', () => {
         status: 'retry',
         lastError: expect.stringContaining('ended in error'),
       });
+    });
+
+    it('stops immediately on a structured exhausted provider allowance without duplicating the skill run', async () => {
+      const storage = (await createFactoryStorageForTests()).workItems;
+      const { item, transitionService } = await queueDecision(storage, planSkill('plan-cap-exhausted'));
+      const quotaError = Object.assign(new Error('The usage limit has been reached'), {
+        statusCode: 429,
+        responseBody: JSON.stringify({ error: { type: 'usage_limit_reached', resets_at: 1790494663, secret: 'not-for-storage' } }),
+      });
+      const { controller, session } = createSession(undefined, {
+        agentEndReason: 'error',
+        emitAgentEndDuringSignal: true,
+        runError: quotaError,
+      });
+      await bindRole(storage, item.id, 'plan');
+      const dispatcher = new FactoryDecisionDispatcher({
+        controller: controller as never,
+        isAutoRunEnabled: async () => true,
+        transitionService,
+        storage,
+        ownerId: 'worker-1',
+      });
+
+      await dispatcher.runOnce(new Date('2030-01-01T00:00:00Z'));
+
+      const [record] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+      expect(record).toMatchObject({
+        status: 'failed',
+        attempts: 1,
+        failureCode: 'provider_usage_limit',
+      });
+      expect(record?.lastError).toContain('usage allowance is exhausted');
+      expect(record?.lastError).not.toContain('not-for-storage');
+      expect(factoryDispatchFailureMetadata('provider_usage_limit').canRetry).toBe(false);
+
+      await dispatcher.runOnce(new Date('2030-01-01T00:01:00Z'));
+      expect(session.sendSignal).toHaveBeenCalledTimes(1);
     });
 
     it('fails terminally when an abort follows a permanent OM provider rejection', async () => {
