@@ -35,7 +35,7 @@ import type {
   WorkItemsStorage,
 } from '../storage/domains/work-items/base.js';
 import { FACTORY_RULE_MATERIALIZATION_KEY } from '../storage/domains/work-items/base.js';
-import { FactoryDispatchError, factoryDispatchFailureCode, factoryDispatchFailureMetadata } from './dispatch-errors.js';
+import { FactoryDispatchError, factoryDispatchFailureCode, factoryDispatchFailureMetadata, isProviderUsageLimitError } from './dispatch-errors.js';
 import type { FactoryTransitionService } from './transition-service.js';
 import type { FactoryCommitDecision, FactoryRuleActor, FactoryRuleCausalEntry } from './types.js';
 import { externallyAuthoredWorkItem, FACTORY_RULE_STAGES } from './types.js';
@@ -130,18 +130,24 @@ function watchRun(
   // reason — so without this the true cause (e.g. a provider rejecting the OM
   // model) is lost and the abort is retried blindly.
   let omFailure: string | undefined;
+  let providerUsageLimit = false;
   // Re-armed before a redelivery so the second send waits on its own run's
   // ending rather than seeing the one that already resolved.
   const arm = () => {
     endReason = undefined;
     supersededAtEnd = undefined;
     omFailure = undefined;
+    providerUsageLimit = false;
     agentEnd = new Promise<void>(resolve => {
       resolveAgentEnd = resolve;
     });
   };
   arm();
   const unsubscribe = session.subscribe(event => {
+    if (event.type === 'error' && isProviderUsageLimitError(event.error)) {
+      providerUsageLimit = true;
+      return;
+    }
     if (event.type === 'agent_end') {
       endReason = event.reason;
       supersededAtEnd = onAgentEnd?.();
@@ -203,6 +209,12 @@ function watchRun(
           `${label} terminal event was not observed before timeout.`,
         );
       }
+      if (providerUsageLimit && (endReason === 'error' || endReason === 'aborted')) {
+        throw new FactoryDispatchError(
+          'provider_usage_limit',
+          `${label} stopped because the model provider's usage allowance is exhausted. Resume only when capacity is available or an approved provider is configured.`,
+        );
+      }
       if (endReason === 'error') throw new Error(`${label} ended in error.`);
       if (endReason === 'aborted') {
         // An abort that follows an observational-memory failure is not the
@@ -213,6 +225,15 @@ function watchRun(
         // account) fail terminally so retries stop hammering a run that can
         // never succeed until the configuration changes.
         if (omFailure) {
+          // OM's own failure event carries text rather than a typed Error. A
+          // distinct machine-readable quota code is sufficient; plain HTTP
+          // 429 remains transient and must not be treated as entitlement loss.
+          if (/\b(?:usage_limit_reached|insufficient_quota)\b/i.test(omFailure)) {
+            throw new FactoryDispatchError(
+              'provider_usage_limit',
+              `${label} stopped because the observational-memory provider's usage allowance is exhausted. Resume only when capacity is available or an approved provider is configured.`,
+            );
+          }
           if (isPermanentProviderRejection(omFailure)) {
             throw new FactoryDispatchError(
               'run_configuration_invalid',
